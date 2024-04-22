@@ -1,82 +1,107 @@
 #include <iostream>
+#include <fstream>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <thread>
 
 #pragma comment(lib, "Ws2_32.lib")
 
 using namespace std;
 
+//function to relay messages between clients
+void relayMessages(SOCKET from, SOCKET to, const string& fromLabel, ofstream& logFile) {
+    char buffer[1024];
+    while (true) {
+        int bytesReceived = recv(from, buffer, sizeof(buffer), 0);
+        if (bytesReceived > 0) {
+            buffer[bytesReceived] = '\0';
+            cout << fromLabel << " says: " << buffer << endl;
+            logFile << fromLabel << ": " << buffer << endl;
+
+            //sends message to the other client immediately
+            send(to, buffer, bytesReceived, 0);
+        } else {
+            if (bytesReceived == 0) {
+                cout << fromLabel << " disconnected." << endl;
+            } else {
+                cerr << "recv failed with error: " << WSAGetLastError() << endl;
+            }
+            return;
+        }
+    }
+}
+
 int main() {
     WSADATA wsaData;
-    SOCKET serverSocket, clientSocket;
-    sockaddr_in serverAddress;
+    SOCKET serverSocket, clientSocket1, clientSocket2;
+    sockaddr_in serverAddr;
+    ofstream chatHistory("chat_history.txt", ios::out | ios::app);
 
-    // Initialize Winsock
-    int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
-    if (result != 0) {
-        cout << "WSAStartup failed: " << result << endl;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        cerr << "WSAStartup failed: " << WSAGetLastError() << endl;
         return 1;
     }
 
-    // Create socket
     serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (serverSocket == INVALID_SOCKET) {
-        cout << "Socket creation failed with error: " << WSAGetLastError() << endl;
+        cerr << "Socket creation failed: " << WSAGetLastError() << endl;
         WSACleanup();
         return 1;
     }
 
-    // Set up the sockaddr structure
-    serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(8080); // Port number
-    serverAddress.sin_addr.s_addr = INADDR_ANY; // Listen on all network interfaces
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(8080);
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
 
-    // Bind the socket
-    if (bind(serverSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) == SOCKET_ERROR) {
-        cout << "Bind failed with error: " << WSAGetLastError() << endl;
+    if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        cerr << "Bind failed: " << WSAGetLastError() << endl;
         closesocket(serverSocket);
         WSACleanup();
         return 1;
     }
 
-    // Listen for incoming connections
-    if (listen(serverSocket, 1) == SOCKET_ERROR) { // Listen backlog set to 1
-        cout << "Listen failed with error: " << WSAGetLastError() << endl;
+    if (listen(serverSocket, 2) == SOCKET_ERROR) {
+        cerr << "Listen failed: " << WSAGetLastError() << endl;
         closesocket(serverSocket);
         WSACleanup();
         return 1;
     }
 
-    // Accept a connection
-    cout << "Waiting for a client to connect..." << endl;
-    clientSocket = accept(serverSocket, NULL, NULL);
-    if (clientSocket == INVALID_SOCKET) {
-        cout << "Accept failed with error: " << WSAGetLastError() << endl;
+    cout << "Waiting for clients to connect..." << endl;
+
+    clientSocket1 = accept(serverSocket, NULL, NULL);
+    if (clientSocket1 == INVALID_SOCKET) {
+        cerr << "Accept failed for client 1: " << WSAGetLastError() << endl;
         closesocket(serverSocket);
         WSACleanup();
         return 1;
     }
+    cout << "Client 1 connected." << endl;
 
-    cout << "Client connected." << endl;
-
-    // Receive data from the client
-    char buffer[1024];
-    int bytesReceived = recv(clientSocket, buffer, sizeof(buffer), 0);
-    if (bytesReceived > 0) {
-        cout << "Received message: " << string(buffer, 0, bytesReceived) << endl;
-    } else if (bytesReceived == 0) {
-        cout << "Connection closing..." << endl;
-    } else {
-        cout << "recv failed with error: " << WSAGetLastError() << endl;
+    clientSocket2 = accept(serverSocket, NULL, NULL);
+    if (clientSocket2 == INVALID_SOCKET) {
+        cerr << "Accept failed for client 2: " << WSAGetLastError() << endl;
+        closesocket(clientSocket1);
+        closesocket(serverSocket);
+        WSACleanup();
+        return 1;
     }
+    cout << "Client 2 connected. Starting communication..." << endl;
 
-    // Send a response to the client
-    string response = "Message received.";
-    send(clientSocket, response.c_str(), response.length(), 0);
+    //threads to handle communication
+    thread client1ToClient2(relayMessages, clientSocket1, clientSocket2, "Client 1", ref(chatHistory));
+    thread client2ToClient1(relayMessages, clientSocket2, clientSocket1, "Client 2", ref(chatHistory));
 
-    // Clean up
-    closesocket(clientSocket);
+    // wait for both threads to finish
+    client1ToClient2.join();
+    client2ToClient1.join();
+
+    // clean up
+    chatHistory.close();
+    closesocket(clientSocket1);
+    closesocket(clientSocket2);
     closesocket(serverSocket);
     WSACleanup();
+
     return 0;
 }
